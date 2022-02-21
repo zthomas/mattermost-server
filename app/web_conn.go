@@ -391,7 +391,9 @@ func (wc *WebConn) writePump() {
 	}()
 
 	if wc.Sequence != 0 {
+		println("[agnivade] got sequence number - ", wc.Sequence, " for connectionID -", wc.GetConnectionID())
 		if ok, index := wc.isInDeadQueue(wc.Sequence); ok {
+			println("[agnivade] in dead queue --")
 			if err := wc.drainDeadQueue(index); err != nil {
 				wc.logSocketErr("websocket.drainDeadQueue", err)
 				return
@@ -400,6 +402,7 @@ func (wc *WebConn) writePump() {
 				m.IncrementWebsocketReconnectEvent(reconnectFound)
 			}
 		} else if wc.hasMsgLoss() {
+			println("[agnivade] has message loss ---")
 			// If the seq number is not in dead queue, but it was supposed to be,
 			// then generate a different connection ID,
 			// and set sequence to 0, and clear dead queue.
@@ -418,6 +421,7 @@ func (wc *WebConn) writePump() {
 				m.IncrementWebsocketReconnectEvent(reconnectNotFound)
 			}
 		} else {
+			println("[agnivade] lossless reconnect")
 			if m := wc.App.Metrics(); m != nil {
 				m.IncrementWebsocketReconnectEvent(reconnectLossless)
 			}
@@ -489,6 +493,7 @@ func (wc *WebConn) writePump() {
 
 			if evtOk {
 				wc.addToDeadQueue(evt)
+				println("[agnivade] Sending msg with sequence number ----------", evt.GetSequence(), "--- connection id ---", wc.GetConnectionID())
 			}
 
 			if err := wc.writeMessageBuf(websocket.TextMessage, buf.Bytes()); err != nil {
