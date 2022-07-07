@@ -385,6 +385,7 @@ type PostStore interface {
 	GetOldestEntityCreationTime() (int64, error)
 	HasAutoResponsePostByUserSince(options model.GetPostsSinceOptions, userId string) (bool, error)
 	GetPostsSinceForSync(options model.GetPostsSinceForSyncOptions, cursor model.GetPostsSinceForSyncCursor, limit int) ([]*model.Post, model.GetPostsSinceForSyncCursor, error)
+	PrepareThreadedResponse(posts []*model.PostWithExtra, extended, reversed bool, sanitizeOptions map[string]bool) (*model.PostList, error)
 }
 
 type UserStore interface {
