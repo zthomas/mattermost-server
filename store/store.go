@@ -386,6 +386,8 @@ type PostStore interface {
 	HasAutoResponsePostByUserSince(options model.GetPostsSinceOptions, userId string) (bool, error)
 	GetPostsSinceForSync(options model.GetPostsSinceForSyncOptions, cursor model.GetPostsSinceForSyncCursor, limit int) ([]*model.Post, model.GetPostsSinceForSyncCursor, error)
 	PrepareThreadedResponse(posts []*model.PostWithExtra, extended, reversed bool, sanitizeOptions map[string]bool) (*model.PostList, error)
+	// GetNthRecentPostTime returns the CreateAt time of the nth most recent post.
+	GetNthRecentPostTime(n int64) (int64, error)
 }
 
 type UserStore interface {
