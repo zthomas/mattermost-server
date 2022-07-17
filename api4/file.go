@@ -729,8 +729,10 @@ func writeFileResponse(filename string, contentType string, contentSize int64, l
 	}
 
 	// prevent file links from being embedded in iframes
-	w.Header().Set("X-Frame-Options", "DENY")
-	w.Header().Set("Content-Security-Policy", "Frame-ancestors 'none'")
+	//w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("X-Frame-Options", "ALLOW-FROM localhost:3000")
+	//w.Header().Set("Content-Security-Policy", "Frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "Frame-ancestors 'self' localhost:3000")
 
 	http.ServeContent(w, r, filename, lastModification, fileReader)
 }

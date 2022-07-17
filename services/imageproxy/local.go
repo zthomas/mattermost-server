@@ -110,10 +110,12 @@ func (backend *LocalBackend) GetImage(w http.ResponseWriter, r *http.Request, im
 		return
 	}
 
-	w.Header().Set("X-Frame-Options", "deny")
+	//w.Header().Set("X-Frame-Options", "deny")
+	w.Header().Set("X-Frame-Options", "allow-from localhost:3000")
 	w.Header().Set("X-XSS-Protection", "1; mode=block")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'")
+	//w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'")
+	w.Header().Set("Content-Security-Policy", "default-src 'self' localhost:3000; img-src data:; style-src 'unsafe-inline'")
 
 	rec := contentTypeRecorder{w, filepath.Base(u.Path)}
 	backend.ServeImage(&rec, req)
@@ -191,7 +193,8 @@ func (backend *LocalBackend) ServeImage(w http.ResponseWriter, req *http.Request
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	// Add a Content-Security-Policy to prevent stored-XSS attacks via SVG files
-	w.Header().Set("Content-Security-Policy", "script-src 'none'")
+	//w.Header().Set("Content-Security-Policy", "script-src 'none'")
+	w.Header().Set("Content-Security-Policy", "script-src 'self' localhost:3000")
 
 	// Disable Content-Type sniffing
 	w.Header().Set("X-Content-Type-Options", "nosniff")

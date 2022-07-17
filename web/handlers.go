@@ -227,13 +227,14 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if h.IsStatic {
 		// Instruct the browser not to display us in an iframe unless is the same origin for anti-clickjacking
-		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		//w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		w.Header().Set("X-Frame-Options", "ALLOW-FROM localhost:3000")
 
 		devCSP := generateDevCSP(*c)
 
 		// Set content security policy. This is also specified in the root.html of the webapp in a meta tag.
 		w.Header().Set("Content-Security-Policy", fmt.Sprintf(
-			"frame-ancestors 'self'; script-src 'self' cdn.rudderlabs.com%s%s%s",
+			"frame-ancestors 'self' localhost:3000; script-src 'self' localhost:3000 cdn.rudderlabs.com%s%s%s",
 			cloudCSP,
 			h.cspShaDirective,
 			devCSP,
