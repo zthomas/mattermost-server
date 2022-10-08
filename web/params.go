@@ -90,6 +90,8 @@ type Params struct {
 	ExcludePolicyConstrained  bool
 	GroupSource               model.GroupSource
 	FilterHasMember           string
+	SortType                  string
+	Since                     int64
 
 	// Cloud
 	InvoiceId string
@@ -143,6 +145,13 @@ func ParamsFromRequest(r *http.Request) *Params {
 	params.RemoteId = props["remote_id"]
 	params.InvoiceId = props["invoice_id"]
 	params.Scope = query.Get("scope")
+	params.SortType = props["sortType"]
+
+	if val, err := strconv.ParseInt(query.Get("since"), 10, 64); err != nil || val < 0 {
+		params.Since = 0
+	} else {
+		params.Since = val
+	}
 
 	if val, err := strconv.Atoi(query.Get("page")); err != nil || val < 0 {
 		params.Page = PageDefault

@@ -105,6 +105,7 @@ type Post struct {
 	RemoteId      *string         `json:"remote_id,omitempty"`
 
 	// Transient data populated before sending a post to the client
+	Upvotes      int64         `json:"upvotes"`
 	ReplyCount   int64         `json:"reply_count"`
 	LastReplyAt  int64         `json:"last_reply_at"`
 	Participants []*User       `json:"participants"`
@@ -241,6 +242,7 @@ func (o *Post) ShallowCopy(dst *Post) error {
 		dst.IsFollowing = NewBool(*o.IsFollowing)
 	}
 	dst.RemoteId = o.RemoteId
+	dst.Upvotes = o.Upvotes
 	return nil
 }
 
@@ -271,6 +273,7 @@ type GetPostsSinceOptions struct {
 	CollapsedThreads         bool
 	CollapsedThreadsExtended bool
 	SortAscending            bool
+	SortType                 string
 }
 
 type GetPostsSinceForSyncCursor struct {
@@ -296,6 +299,8 @@ type GetPostsOptions struct {
 	FromPost                 string // PostId after which to send the items
 	FromCreateAt             int64  // CreateAt after which to send the items
 	Direction                string // Only accepts up|down. Indicates the order in which to send the items.
+	SortType                 string
+	Time                     int64
 }
 
 type PostCountOptions struct {

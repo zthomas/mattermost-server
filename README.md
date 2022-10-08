@@ -1,3 +1,69 @@
+
+# Matter3 server
+
+## Testing new SQL commands
+
+### Debug server in vscode
+
+0. (Optional) Set up VSCode launch.json to allow more detailed watch variables.
+*.vscode/launch.json*
+```
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Connect to server",
+      "type": "go",
+      "request": "attach",
+      "mode": "remote",
+      "remotePath": "${workspaceFolder}",
+      "port": 2345,
+      "host": "127.0.0.1",
+      "dlvLoadConfig": {
+        "followPointers": true,
+        "maxVariableRecurse": 1,
+        "maxStringLen": 1500,
+        "maxArrayValues": 64,
+        "maxStructFields": -1
+      }
+    }
+  ]
+}
+```
+1. Set breakpoint in new store method and modify SQL.
+2. Run: make debug-server-headless
+3. Connect to server in VSCode and step through.
+
+### Run SQL directly against Mattermost preview database
+
+See:
+https://mattermost.com/deploy/
+https://docs.mattermost.com/install/trouble\_mysql.html
+
+0. docker pull mattermost/mattermost-preview
+1. docker run --name mattermost-preview -d --publish 8065:8065 mattermost/mattermost-preview
+2. docker exec -it mattermost-preview /bin/bash
+3. Open web browser at localhost:8065 and create first user
+4. Check that MySQL db running in docker preview: mysqladmin -u mmuser -p mostest status
+5. Connect to mysql: mysql -u mmuser -p (enter 'mostest' at prompt)
+6. See that db mattermost\_test exists: show databases;
+7. Connect: use mattermost\_test;
+8. List tables: show tables;
+9. Select (for ex) a post from Posts table: select * from Posts limit 1;
+
+&nbsp;
+
+*(Standard server documentation follows)*
+
+&nbsp;
+
+&nbsp;
+
+---
+
 # [![Mattermost](https://user-images.githubusercontent.com/7205829/137170381-fe86eef0-bccc-4fdd-8e92-b258884ebdd7.png)](https://mattermost.com)
 
 [Mattermost](https://mattermost.com) is an open source platform for secure collaboration across the entire software development lifecycle. This repo is the primary source for core development on the Mattermost platform; it's written in Go and React and runs as a single Linux binary with MySQL or PostgreSQL. A new compiled version is released under an MIT license every month on the 16th.

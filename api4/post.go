@@ -163,6 +163,12 @@ func getPostsForChannel(c *Context, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sortType := r.URL.Query().Get("sortType")
+	if sortType != "" && sortType != "asc" && sortType != "desc" && sortType != "top" {
+		c.SetInvalidParam("sortType")
+		return
+	}
+
 	sinceString := r.URL.Query().Get("since")
 	var since int64
 	var parseError error
@@ -179,6 +185,7 @@ func getPostsForChannel(c *Context, w http.ResponseWriter, r *http.Request) {
 	channelId := c.Params.ChannelId
 	page := c.Params.Page
 	perPage := c.Params.PerPage
+	hasPageParam := r.URL.Query().Get("page") != ""
 
 	if !c.App.SessionHasPermissionToChannel(c.AppContext, *c.AppContext.Session(), channelId, model.PermissionReadChannel) {
 		c.SetPermissionError(model.PermissionReadChannel)
@@ -201,32 +208,32 @@ func getPostsForChannel(c *Context, w http.ResponseWriter, r *http.Request) {
 	var err *model.AppError
 	etag := ""
 
-	if since > 0 {
-		list, err = c.App.GetPostsSince(model.GetPostsSinceOptions{ChannelId: channelId, Time: since, SkipFetchThreads: skipFetchThreads, CollapsedThreads: collapsedThreads, CollapsedThreadsExtended: collapsedThreadsExtended, UserId: c.AppContext.Session().UserId})
-	} else if afterPost != "" {
+	if afterPost != "" {
 		etag = c.App.GetPostsEtag(channelId, collapsedThreads)
-
 		if c.HandleEtag(etag, "Get Posts After", w, r) {
 			return
 		}
-
-		list, err = c.App.GetPostsAfterPost(model.GetPostsOptions{ChannelId: channelId, PostId: afterPost, Page: page, PerPage: perPage, SkipFetchThreads: skipFetchThreads, CollapsedThreads: collapsedThreads, UserId: c.AppContext.Session().UserId})
+		list, err = c.App.GetPostsAfterPost(model.GetPostsOptions{ChannelId: channelId, PostId: afterPost, Time: since, Page: page, PerPage: perPage, SkipFetchThreads: skipFetchThreads, CollapsedThreads: collapsedThreads, UserId: c.AppContext.Session().UserId, SortType: sortType})
 	} else if beforePost != "" {
 		etag = c.App.GetPostsEtag(channelId, collapsedThreads)
-
 		if c.HandleEtag(etag, "Get Posts Before", w, r) {
 			return
 		}
-
-		list, err = c.App.GetPostsBeforePost(model.GetPostsOptions{ChannelId: channelId, PostId: beforePost, Page: page, PerPage: perPage, SkipFetchThreads: skipFetchThreads, CollapsedThreads: collapsedThreads, CollapsedThreadsExtended: collapsedThreadsExtended, UserId: c.AppContext.Session().UserId})
+		list, err = c.App.GetPostsBeforePost(model.GetPostsOptions{ChannelId: channelId, PostId: beforePost, Time: since, Page: page, PerPage: perPage, SkipFetchThreads: skipFetchThreads, CollapsedThreads: collapsedThreads, CollapsedThreadsExtended: collapsedThreadsExtended, UserId: c.AppContext.Session().UserId, SortType: sortType})
+	} else if since > 0 && !hasPageParam {
+		// Etag checks most recently modified post against request to see if updates are needed.
+		// Since is being expanded from just sync operations so benefits from etag check now, too.
+		etag = c.App.GetPostsEtag(channelId, collapsedThreads)
+		if c.HandleEtag(etag, "Get Posts Since", w, r) {
+			return
+		}
+		list, err = c.App.GetPostsSince(model.GetPostsSinceOptions{ChannelId: channelId, Time: since, SkipFetchThreads: skipFetchThreads, CollapsedThreads: collapsedThreads, CollapsedThreadsExtended: collapsedThreadsExtended, UserId: c.AppContext.Session().UserId, SortType: sortType})
 	} else {
 		etag = c.App.GetPostsEtag(channelId, collapsedThreads)
-
 		if c.HandleEtag(etag, "Get Posts", w, r) {
 			return
 		}
-
-		list, err = c.App.GetPostsPage(model.GetPostsOptions{ChannelId: channelId, Page: page, PerPage: perPage, SkipFetchThreads: skipFetchThreads, CollapsedThreads: collapsedThreads, CollapsedThreadsExtended: collapsedThreadsExtended, UserId: c.AppContext.Session().UserId})
+		list, err = c.App.GetPostsPage(model.GetPostsOptions{ChannelId: channelId, Time: since, Page: page, PerPage: perPage, SkipFetchThreads: skipFetchThreads, CollapsedThreads: collapsedThreads, CollapsedThreadsExtended: collapsedThreadsExtended, UserId: c.AppContext.Session().UserId, SortType: sortType})
 	}
 
 	if err != nil {
@@ -278,7 +285,24 @@ func getPostsForChannelAroundLastUnread(c *Context, w http.ResponseWriter, r *ht
 	collapsedThreads := r.URL.Query().Get("collapsedThreads") == "true"
 	collapsedThreadsExtended := r.URL.Query().Get("collapsedThreadsExtended") == "true"
 
-	postList, err := c.App.GetPostsForChannelAroundLastUnread(c.AppContext, channelId, userId, c.Params.LimitBefore, c.Params.LimitAfter, skipFetchThreads, collapsedThreads, collapsedThreadsExtended)
+	sortType := r.URL.Query().Get("sortType")
+	if sortType != "" && sortType != "desc" && sortType != "asc" && sortType != "top" {
+		c.SetInvalidParam("sortType")
+		return
+	}
+
+	sinceString := r.URL.Query().Get("since")
+	var since int64
+	var parseError error
+	if sinceString != "" {
+		since, parseError = strconv.ParseInt(sinceString, 10, 64)
+		if parseError != nil {
+			c.SetInvalidParam("since")
+			return
+		}
+	}
+
+	postList, err := c.App.GetPostsForChannelAroundLastUnread(c.AppContext, channelId, userId, c.Params.LimitBefore, c.Params.LimitAfter, skipFetchThreads, collapsedThreads, collapsedThreadsExtended, sortType, since)
 	if err != nil {
 		c.Err = err
 		return
@@ -292,7 +316,7 @@ func getPostsForChannelAroundLastUnread(c *Context, w http.ResponseWriter, r *ht
 			return
 		}
 
-		postList, err = c.App.GetPostsPage(model.GetPostsOptions{ChannelId: channelId, Page: app.PageDefault, PerPage: c.Params.LimitBefore, SkipFetchThreads: skipFetchThreads, CollapsedThreads: collapsedThreads, CollapsedThreadsExtended: collapsedThreadsExtended, UserId: c.AppContext.Session().UserId})
+		postList, err = c.App.GetPostsPage(model.GetPostsOptions{ChannelId: channelId, Page: app.PageDefault, PerPage: c.Params.LimitBefore, SkipFetchThreads: skipFetchThreads, CollapsedThreads: collapsedThreads, CollapsedThreadsExtended: collapsedThreadsExtended, UserId: c.AppContext.Session().UserId, SortType: sortType, Time: since})
 		if err != nil {
 			c.Err = err
 			return

@@ -90,9 +90,10 @@ func (s LocalCachePostStore) GetEtag(channelId string, allowFromCache, collapsed
 }
 
 func (s LocalCachePostStore) GetPostsSince(options model.GetPostsSinceOptions, allowFromCache bool, sanitizeOptions map[string]bool) (*model.PostList, error) {
-	if allowFromCache {
+	if allowFromCache && (options.SortType == "" || options.SortType == "desc" || options.SortType == "asc") {
 		// If the last post in the channel's time is less than or equal to the time we are getting posts since,
 		// we can safely return no posts.
+		// But only if we're returning posts sorted by time.
 		var lastTime int64
 		if err := s.rootStore.doStandardReadCache(s.rootStore.lastPostTimeCache, options.ChannelId, &lastTime); err == nil && lastTime <= options.Time {
 			list := model.NewPostList()

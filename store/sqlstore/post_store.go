@@ -1114,7 +1114,11 @@ func (s *SqlPostStore) prepareThreadedResponse(posts []*postWithExtra, extended,
 	return list, nil
 }
 
+// TODO getTopPostsCollapsedThreads, getPostsSinceCollapsedThreads, getTopPostsSinceCollapsedThreads all very similar and could be restructured
 func (s *SqlPostStore) getPostsCollapsedThreads(options model.GetPostsOptions, sanitizeOptions map[string]bool) (*model.PostList, error) {
+	if options.SortType == "top" {
+		return s.getTopPostsCollapsedThreads(options, sanitizeOptions)
+	}
 	var columns []string
 	for _, c := range postSliceColumns() {
 		columns = append(columns, "Posts."+c)
@@ -1148,6 +1152,43 @@ func (s *SqlPostStore) getPostsCollapsedThreads(options model.GetPostsOptions, s
 	return s.prepareThreadedResponse(posts, options.CollapsedThreadsExtended, false, sanitizeOptions)
 }
 
+func (s *SqlPostStore) getTopPostsCollapsedThreads(options model.GetPostsOptions, sanitizeOptions map[string]bool) (*model.PostList, error) {
+	upvote := "arrow_up_small"
+	var columns []string
+	for _, c := range postSliceColumns() {
+		columns = append(columns, "Posts."+c)
+	}
+	columns = append(columns,
+		"COALESCE(Threads.ReplyCount, 0) as ThreadReplyCount",
+		"COALESCE(Threads.LastReplyAt, 0) as LastReplyAt",
+		"COALESCE(Threads.Participants, '[]') as ThreadParticipants",
+		"ThreadMemberships.Following as IsFollowing",
+		"COUNT(Reactions.PostId) as Upvotes",
+	)
+	offset := options.PerPage * options.Page
+	var posts []*postWithExtra
+	var query string
+	var params []any
+	query = `SELECT ` + strings.Join(columns, ",") + ` 
+		FROM Posts
+		LEFT JOIN Threads ON Threads.PostId = Posts.Id
+		LEFT JOIN ThreadMemberships ON ThreadMemberships.PostId = Posts.Id AND ThreadMemberships.UserId = ?
+		LEFT JOIN Reactions on Reactions.PostId = Posts.Id AND Reactions.EmojiName = ? AND COALESCE(Reactions.DeleteAt, 0) = 0
+		WHERE Posts.DeleteAt = 0
+		AND Posts.ChannelId = ?
+		AND Posts.UpdateAt > ?
+		AND Posts.RootId = ''
+		GROUP BY Posts.Id, ThreadReplyCount, LastReplyAt, ThreadParticipants, IsFollowing
+		ORDER BY Upvotes DESC, Posts.CreateAt DESC
+		LIMIT ? OFFSET ?`
+	params = []any{options.UserId, upvote, options.ChannelId, options.Time, options.PerPage, offset}
+	err := s.GetReplicaX().Select(&posts, query, params...)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to find Posts with channelId=%s", options.ChannelId)
+	}
+	return s.prepareThreadedResponse(posts, options.CollapsedThreadsExtended, false, sanitizeOptions)
+}
+
 func (s *SqlPostStore) GetPosts(options model.GetPostsOptions, _ bool, sanitizeOptions map[string]bool) (*model.PostList, error) {
 	if options.PerPage > 1000 {
 		return nil, store.NewErrInvalidInput("Post", "<options.PerPage>", options.PerPage)
@@ -1159,13 +1200,13 @@ func (s *SqlPostStore) GetPosts(options model.GetPostsOptions, _ bool, sanitizeO
 
 	rpc := make(chan store.StoreResult, 1)
 	go func() {
-		posts, err := s.getRootPosts(options.ChannelId, offset, options.PerPage, options.SkipFetchThreads)
+		posts, err := s.getRootPostsBySort(options.ChannelId, offset, options.PerPage, options.SkipFetchThreads, options.SortType, options.Time)
 		rpc <- store.StoreResult{Data: posts, NErr: err}
 		close(rpc)
 	}()
 	cpc := make(chan store.StoreResult, 1)
 	go func() {
-		posts, err := s.getParentsPosts(options.ChannelId, offset, options.PerPage, options.SkipFetchThreads)
+		posts, err := s.getParentsPostsBySort(options.ChannelId, offset, options.PerPage, options.SkipFetchThreads, options.SortType, options.Time)
 		cpc <- store.StoreResult{Data: posts, NErr: err}
 		close(cpc)
 	}()
@@ -1200,6 +1241,9 @@ func (s *SqlPostStore) GetPosts(options model.GetPostsOptions, _ bool, sanitizeO
 }
 
 func (s *SqlPostStore) getPostsSinceCollapsedThreads(options model.GetPostsSinceOptions, sanitizeOptions map[string]bool) (*model.PostList, error) {
+	if options.SortType == "top" {
+		return s.getTopPostsSinceCollapsedThreads(options, sanitizeOptions)
+	}
 	var columns []string
 	for _, c := range postSliceColumns() {
 		columns = append(columns, "Posts."+c)
@@ -1230,8 +1274,61 @@ func (s *SqlPostStore) getPostsSinceCollapsedThreads(options model.GetPostsSince
 	return s.prepareThreadedResponse(posts, options.CollapsedThreadsExtended, false, sanitizeOptions)
 }
 
+// getPostsSinceCollapsedThreads() only selects root level posts in channel that have responses
+func (s *SqlPostStore) getTopPostsSinceCollapsedThreads(options model.GetPostsSinceOptions, sanitizeOptions map[string]bool) (*model.PostList, error) {
+	upvote := "arrow_up_small"
+
+	var columns []string
+	for _, c := range postSliceColumns() {
+		columns = append(columns, "Posts."+c)
+	}
+	columns = append(columns,
+		"COALESCE(Threads.ReplyCount, 0) as ThreadReplyCount",
+		"COALESCE(Threads.LastReplyAt, 0) as LastReplyAt",
+		"COALESCE(Threads.Participants, '[]') as ThreadParticipants",
+		"ThreadMemberships.Following as IsFollowing",
+		"COUNT(Reactions.PostId) as Upvotes",
+	)
+	var posts []*postWithExtra
+
+	var query string
+	var params []any
+
+	// Note: In MySQL GROUP BY multiple of the select columns (but not Upvotes) or no GROUP BY at all is OK.
+	//  But note including GROUP BY LastReplyAt works but throws a warning.
+
+	// Note: postgresql (but not mysql) requires group by when any aggregate function (like count) is used.
+	//  The aggregate function doesn't need to be in the group by statement.
+	//  If there are ungrouped columns in the select that refer to a primary key, only the primary key needs to be in the group by statement.
+	//  https://www.postgresql.org/docs/12/sql-select.html#SQL-GROUPBY
+
+	query = `SELECT ` + strings.Join(columns, ",") + ` 
+		FROM Posts
+		LEFT JOIN Threads ON Threads.PostId = Posts.Id
+		LEFT JOIN ThreadMemberships ON ThreadMemberships.PostId = Posts.Id AND ThreadMemberships.UserId = ?
+		LEFT JOIN Reactions on Reactions.PostId = Posts.Id AND Reactions.EmojiName = ? AND COALESCE(Reactions.DeleteAt, 0) = 0
+		WHERE Posts.DeleteAt = 0
+		AND Posts.ChannelId = ?
+		AND Posts.UpdateAt > ?
+		AND Posts.RootId = ''
+		GROUP BY Posts.Id, ThreadReplyCount, LastReplyAt, ThreadParticipants, IsFollowing
+		ORDER BY Upvotes DESC, Posts.CreateAt DESC`
+
+	params = []any{options.UserId, upvote, options.ChannelId, options.Time}
+
+	err := s.GetReplicaX().Select(&posts, query, params...)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to find Posts with channelId=%s", options.ChannelId)
+	}
+	return s.prepareThreadedResponse(posts, options.CollapsedThreadsExtended, false, sanitizeOptions)
+}
+
 //nolint:unparam
 func (s *SqlPostStore) GetPostsSince(options model.GetPostsSinceOptions, allowFromCache bool, sanitizeOptions map[string]bool) (*model.PostList, error) {
+	if options.SortType == "top" {
+		return s.GetTopPostsSince(options, allowFromCache, sanitizeOptions)
+	}
+
 	if options.CollapsedThreads {
 		return s.getPostsSinceCollapsedThreads(options, sanitizeOptions)
 	}
@@ -1298,6 +1395,111 @@ func (s *SqlPostStore) GetPostsSince(options model.GetPostsSinceOptions, allowFr
 
 		params = []any{options.Time, options.ChannelId}
 	}
+	err := s.GetReplicaX().Select(&posts, query, params...)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to find Posts with channelId=%s", options.ChannelId)
+	}
+
+	list := model.NewPostList()
+
+	for _, p := range posts {
+		list.AddPost(p)
+		if p.UpdateAt > options.Time {
+			list.AddOrder(p.Id)
+		}
+	}
+
+	return list, nil
+}
+
+// Note: should be fine to just use GetTopPostsSince() as a drop-in replacement for GetPostsSince(), but
+//  keeping older method GetPostsSince() until trending sort is implemented.
+
+//nolint:unparam
+func (s *SqlPostStore) GetTopPostsSince(options model.GetPostsSinceOptions, allowFromCache bool, sanitizeOptions map[string]bool) (*model.PostList, error) {
+	upvote := "arrow_up_small"
+
+	if options.CollapsedThreads {
+		return s.getPostsSinceCollapsedThreads(options, sanitizeOptions)
+	}
+
+	posts := []*model.Post{}
+
+	order := ""
+	if options.SortType == "top" {
+		order = "Upvotes DESC, "
+	}
+	order += "CreateAt "
+	if options.SortAscending {
+		order += "ASC"
+	} else {
+		order += "DESC"
+	}
+
+	upvotesQuery1 := ""
+	//upvotesQuery2 := ""
+	if options.SortType == "top" {
+		upvotesQuery1 = `, (SELECT COUNT(*) FROM Reactions WHERE Reactions.PostId = p1.Id AND Reactions.EmojiName = '` + upvote + `' AND Reactions.DeleteAt = 0) as Upvotes`
+		//upvotesQuery2 = `, (SELECT COUNT(*) FROM Reactions WHERE Reactions.PostId = cte.Id AND Reactions.EmojiName = '` + upvote + `' AND Reactions.DeleteAt = 0) as Upvotes`
+	}
+
+	replyCountQuery1 := ""
+	//replyCountQuery2 := ""
+	if options.SkipFetchThreads {
+		replyCountQuery1 = `, (SELECT COUNT(*) FROM Posts WHERE Posts.RootId = (CASE WHEN p1.RootId = '' THEN p1.Id ELSE p1.RootId END) AND Posts.DeleteAt = 0) as ReplyCount`
+		//replyCountQuery2 = `, (SELECT COUNT(*) FROM Posts WHERE Posts.RootId = (CASE WHEN cte.RootId = '' THEN cte.Id ELSE cte.RootId END) AND Posts.DeleteAt = 0) as ReplyCount`
+	}
+	var query string
+	var params []any
+
+	// union of IDs and then join to get full posts is faster in mysql
+	if s.DriverName() == model.DatabaseDriverMysql || s.DriverName() == model.DatabaseDriverPostgres {
+		query = `SELECT *` + upvotesQuery1 + replyCountQuery1 + ` FROM Posts p1 JOIN (
+			(SELECT
+              Id
+			  FROM
+				  Posts p2
+			  WHERE
+				  (UpdateAt > ?
+					  AND ChannelId = ?)
+				  LIMIT 1000)
+			  UNION
+				  (SELECT
+					  Id
+				  FROM
+					  Posts p3
+				  WHERE
+					  Id
+				  IN
+					  (SELECT * FROM (SELECT
+						  RootId
+					  FROM
+						  Posts
+					  WHERE
+						  UpdateAt > ?
+							  AND ChannelId = ?
+					  LIMIT 1000) temp_tab))
+			) j ON p1.Id = j.Id
+          ORDER BY ` + order
+
+		params = []any{options.Time, options.ChannelId, options.Time, options.ChannelId}
+	}
+	/* else if s.DriverName() == model.DatabaseDriverPostgres {
+		query = `WITH cte AS (SELECT
+		       *
+		FROM
+		       Posts
+		WHERE
+		       UpdateAt > ? AND ChannelId = ?
+		       LIMIT 1000)
+		(SELECT *` + upvotesQuery2 + replyCountQuery2 + ` FROM cte)
+		UNION
+		(SELECT *` + upvotesQuery1 + replyCountQuery1 + ` FROM Posts p1 WHERE id in (SELECT rootid FROM cte))
+
+		ORDER BY ` + order
+
+		params = []any{options.Time, options.ChannelId}
+	} */
 	err := s.GetReplicaX().Select(&posts, query, params...)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to find Posts with channelId=%s", options.ChannelId)
@@ -1386,6 +1588,7 @@ func (s *SqlPostStore) GetPostsAfter(options model.GetPostsOptions, sanitizeOpti
 	return s.getPostsAround(false, options, sanitizeOptions)
 }
 
+// TODO implement sortType
 func (s *SqlPostStore) getPostsAround(before bool, options model.GetPostsOptions, sanitizeOptions map[string]bool) (*model.PostList, error) {
 	if options.Page < 0 {
 		return nil, store.NewErrInvalidInput("Post", "<options.Page>", options.Page)
@@ -1605,22 +1808,62 @@ func (s *SqlPostStore) GetPostAfterTime(channelId string, time int64, collapsedT
 	return &post, nil
 }
 
-func (s *SqlPostStore) getRootPosts(channelId string, offset int, limit int, skipFetchThreads bool) ([]*model.Post, error) {
+func (s *SqlPostStore) getRootPostsBySort(channelId string, offset int, limit int, skipFetchThreads bool, sortType string, since int64) ([]*model.Post, error) {
+	if sortType == "" {
+		sortType = "desc"
+	}
+	if sortType == "top" {
+		return s.getTopRootPosts(channelId, offset, limit, skipFetchThreads, since)
+	}
+	return s.getRootPosts(channelId, offset, limit, skipFetchThreads, since)
+}
+
+func (s *SqlPostStore) getRootPosts(channelId string, offset int, limit int, skipFetchThreads bool, since int64) ([]*model.Post, error) {
 	posts := []*model.Post{}
 	var fetchQuery string
 	if skipFetchThreads {
-		fetchQuery = "SELECT p.*, (SELECT COUNT(*) FROM Posts WHERE Posts.RootId = (CASE WHEN p.RootId = '' THEN p.Id ELSE p.RootId END) AND Posts.DeleteAt = 0) as ReplyCount FROM Posts p WHERE p.ChannelId = ? AND p.DeleteAt = 0 ORDER BY p.CreateAt DESC LIMIT ? OFFSET ?"
+		fetchQuery = "SELECT p.*, (SELECT COUNT(*) FROM Posts WHERE Posts.RootId = (CASE WHEN p.RootId = '' THEN p.Id ELSE p.RootId END) AND Posts.DeleteAt = 0) as ReplyCount FROM Posts p WHERE p.ChannelId = ? AND p.DeleteAt = 0 AND p.CreateAt > ? ORDER BY p.CreateAt DESC LIMIT ? OFFSET ?"
 	} else {
-		fetchQuery = "SELECT * FROM Posts WHERE Posts.ChannelId = ? AND Posts.DeleteAt = 0 ORDER BY Posts.CreateAt DESC LIMIT ? OFFSET ?"
+		fetchQuery = "SELECT * FROM Posts WHERE Posts.ChannelId = ? AND Posts.DeleteAt = 0 AND Posts.CreateAt > ? ORDER BY Posts.CreateAt DESC LIMIT ? OFFSET ?"
 	}
-	err := s.GetReplicaX().Select(&posts, fetchQuery, channelId, limit, offset)
+	err := s.GetReplicaX().Select(&posts, fetchQuery, channelId, since, limit, offset)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to find Posts")
 	}
 	return posts, nil
 }
 
-func (s *SqlPostStore) getParentsPosts(channelId string, offset int, limit int, skipFetchThreads bool) ([]*model.Post, error) {
+func (s *SqlPostStore) getTopRootPosts(channelId string, offset int, limit int, skipFetchThreads bool, since int64) ([]*model.Post, error) {
+	upvote := "arrow_up_small"
+	upvotesQuery := `, (SELECT COUNT(*) FROM Reactions WHERE Reactions.PostId = Posts.Id AND EmojiName = '` + upvote + `' AND COALESCE(DeleteAt, 0) = 0) as Upvotes`
+
+	posts := []*model.Post{}
+	var fetchQuery string
+	order := "p.Upvotes DESC,p.CreateAt DESC"
+	if skipFetchThreads {
+		replyCountQuery := ",(SELECT COUNT(*) FROM Posts WHERE Posts.RootId = (CASE WHEN p.RootId = '' THEN p.Id ELSE p.RootId END) AND Posts.DeleteAt = 0) as ReplyCount"
+		fetchQuery = "SELECT p.*" + replyCountQuery + upvotesQuery + " FROM Posts p WHERE p.ChannelId = ? AND p.DeleteAt = 0 AND p.CreateAt > ? ORDER BY " + order + " LIMIT ? OFFSET ?"
+	} else {
+		fetchQuery = "SELECT *" + upvotesQuery + " FROM Posts WHERE Posts.ChannelId = ? AND Posts.DeleteAt = 0 AND Posts.CreateAt > ? ORDER BY " + order + " LIMIT ? OFFSET ?"
+	}
+	err := s.GetReplicaX().Select(&posts, fetchQuery, channelId, since, limit, offset)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to find Posts")
+	}
+	return posts, nil
+}
+
+func (s *SqlPostStore) getParentsPostsBySort(channelId string, offset int, limit int, skipFetchThreads bool, sortType string, since int64) ([]*model.Post, error) {
+	if sortType == "" {
+		sortType = "desc"
+	}
+	if sortType == "top" {
+		return s.getTopParentsPosts(channelId, offset, limit, skipFetchThreads, since)
+	}
+	return s.getParentsPosts(channelId, offset, limit, skipFetchThreads, since)
+}
+
+func (s *SqlPostStore) getParentsPosts(channelId string, offset int, limit int, skipFetchThreads bool, since int64) ([]*model.Post, error) {
 	if s.DriverName() == model.DatabaseDriverPostgres {
 		return s.getParentsPostsPostgreSQL(channelId, offset, limit, skipFetchThreads)
 	}
@@ -1638,11 +1881,12 @@ func (s *SqlPostStore) getParentsPosts(channelId string, offset int, limit int, 
 			WHERE
 				Posts.ChannelId = ?
 					AND Posts.DeleteAt = 0
+					AND Posts.CreateAt > ?
 			ORDER BY Posts.CreateAt DESC
 			LIMIT ? OFFSET ?) q
 		WHERE q.RootId != ''`
 
-	err := s.GetReplicaX().Select(&roots, rootQuery, channelId, limit, offset)
+	err := s.GetReplicaX().Select(&roots, rootQuery, channelId, since, limit, offset)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to find Posts")
 	}
@@ -1679,6 +1923,63 @@ func (s *SqlPostStore) getParentsPosts(channelId string, offset int, limit int, 
 
 	posts := []*model.Post{}
 	err = s.GetReplicaX().Select(&posts, sql, args...)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to find Posts")
+	}
+	return posts, nil
+}
+
+func (s *SqlPostStore) getTopParentsPosts(channelId string, offset int, limit int, skipFetchThreads bool, since int64) ([]*model.Post, error) {
+	upvote := "arrow_up_small"
+	upvotesQuery := `, (SELECT COUNT(*) FROM Reactions WHERE Reactions.PostId = Posts.Id AND EmojiName = '` + upvote + `' AND COALESCE(DeleteAt, 0) = 0) as Upvotes`
+
+	// query parent Ids first
+	roots := []string{}
+	rootQuery := `
+		SELECT DISTINCT
+			q.RootId
+		FROM
+			(SELECT
+				p.RootId` + upvotesQuery + `
+			FROM
+				Posts p
+			WHERE
+				p.ChannelId = ?
+					AND p.DeleteAt = 0
+					AND p.CreateAt > ?
+			ORDER BY Upvotes DESC,p.CreateAt DESC
+			LIMIT ? OFFSET ?) q
+		WHERE q.RootId != ''`
+
+	err := s.GetReplicaX().Select(&roots, rootQuery, channelId, since, limit, offset)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to find Posts")
+	}
+	if len(roots) == 0 {
+		return nil, nil
+	}
+
+	placeholder, values := constructArrayArgs(roots)
+
+	replyCountQuery := ""
+	whereSkipFetchThreads := ""
+	if skipFetchThreads {
+		replyCountQuery = `, (SELECT COUNT(*) FROM Posts WHERE Posts.RootId = (CASE WHEN Posts.RootId = '' THEN Posts.Id ELSE Posts.RootId END) AND Posts.DeleteAt = 0) as ReplyCount`
+	} else {
+		whereSkipFetchThreads = " OR p.RootId in " + placeholder
+	}
+
+	var query = `SELECT p.*` + upvotesQuery + replyCountQuery + `
+		FROM Posts p
+		WHERE p.Id in ` + placeholder + whereSkipFetchThreads + `
+		AND p.ChannelId = ? AND p.DeleteAt = 0 AND p.CreateAt > ?
+		ORDER BY Upvotes,p.CreateAt`
+
+	var params = []any{values, values, channelId, since}
+
+	posts := []*model.Post{}
+	err = s.GetReplicaX().Select(&posts, query, params...)
+
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to find Posts")
 	}

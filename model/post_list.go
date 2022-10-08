@@ -153,6 +153,12 @@ func (o *PostList) SortByCreateAt() {
 	})
 }
 
+func (o *PostList) SortByUpvotes() {
+	sort.Slice(o.Order, func(i, j int) bool {
+		return o.Posts[o.Order[i]].Upvotes > o.Posts[o.Order[j]].Upvotes
+	})
+}
+
 func (o *PostList) Etag() string {
 
 	id := "0"
